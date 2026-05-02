@@ -1,0 +1,86 @@
+# Urban Metamorphosis — Project Configuration
+# Matches model selection and hardware requirements from PLAN/02_model_selection.md
+
+---
+
+# Model Identifiers (HuggingFace Hub)
+models:
+  base_model_id: "runwayml/stable-diffusion-v1-5"
+  motion_module_id: "guoyww/animatediff-motion-adapter-v1-5-2"
+  tts_model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+  clip_model_id: "openai/clip-vit-large-patch14"
+
+# Local cache / download paths
+paths:
+  models_dir: "./models"
+  base_model_local: "./models/stable-diffusion-v1-5"
+  motion_module_local: "./models/motion-module"
+  tts_model_local: "./models/qwen-tts"
+  outputs_dir: "./outputs"
+  data_dir: "./data"
+
+# Inference Hyperparameters
+inference:
+  resolution: 512
+  num_frames: 16
+  num_inference_steps: 25
+  guidance_scale: 7.5
+  scheduler: "ddim"
+  seed: 42
+
+# Enhancement A — Time-Dependent Prompt Conditioning
+enhancement_a:
+  enabled: true
+  sigmoid_k: 6.0
+  sigmoid_center: 0.5
+
+# Enhancement B — Temporal Smoothness
+enhancement_b:
+  enabled: true
+  # Inference-time frame blending (fallback / default)
+  blend_beta: 0.3
+  # Fine-tuning parameters (optional)
+  finetune:
+    enabled: false
+    lambda_smooth: 0.01
+    lambda_lpips: 0.001
+    learning_rate: 1.0e-5
+    max_steps: 1000
+    dataset_size: 15
+
+# Enhancement C — Temporal Attention Bias
+enhancement_c:
+  enabled: true
+
+# Hardware & Optimization
+hardware:
+  device: "cuda"
+  mixed_precision: "fp16"
+  enable_cpu_offload: false
+  enable_vae_slicing: true
+  enable_xformers: false
+
+# Multi-GPU (for 2x A6000)
+multigpu:
+  enabled: false
+  num_gpus: 2
+
+# Ablation Study Defaults
+ablation:
+  seeds: [42, 123, 999]
+  num_prompts: 50
+  configs:
+    C0_baseline:  {interp: false, blend: 0.0, bias: false}
+    C1_A_only:    {interp: true,  blend: 0.0, bias: false}
+    C2_B_only:    {interp: false, blend: 0.3, bias: false}
+    C3_A_plus_B:  {interp: true,  blend: 0.2, bias: false}
+    C4_A_B_C:     {interp: true,  blend: 0.2, bias: true}
+
+# Evaluation
+evaluation:
+  fvd_enabled: true
+  clip_sim_enabled: true
+  lpips_enabled: true
+  ssim_enabled: true
+  flow_warp_enabled: true
+  user_study_enabled: true

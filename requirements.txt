@@ -1,0 +1,42 @@
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# Diffusion & Transformers
+diffusers>=0.25.0
+transformers>=4.35.0
+accelerate>=0.25.0
+safetensors>=0.4.0
+
+# Quantization & LoRA (optional fine-tuning)
+bitsandbytes
+peft
+
+# Video processing
+av
+ffmpeg-python
+opencv-python
+imageio
+imageio-ffmpeg
+
+# Metrics
+lpips
+scikit-image
+torch-fidelity
+
+# Audio (TTS bonus)
+librosa
+soundfile
+pydub
+
+# Utilities
+matplotlib
+seaborn
+pandas
+tqdm
+ftfy
+regex
+pyyaml
+
+# Jupyter (optional)
+ipykernel
