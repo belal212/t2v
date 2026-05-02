@@ -259,6 +259,8 @@ def main():
         ("eval/run_ablation.py", "ablation"),
         ("eval/weakness_analysis.py", "Weakness"),
         ("eval/run_weakness_analysis.py", "Weakness"),
+        ("eval/compute_fvd.py", "FVD"),
+        ("eval/visualize.py", "Ablation"),
         ("tts/tts_pipeline.py", "Qwen"),
         ("modeling/denoising_loop.py", "Denoising"),
     ]

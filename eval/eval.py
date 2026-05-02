@@ -65,28 +65,40 @@ def evaluate_video(video_path: str, prompt_data: dict, clip_model, clip_processo
     # Flow warping error
     fwe = compute_flow_warping_error(frames)
     fwe_mean = float(np.mean(fwe))
+    fwe_day = float(np.mean(fwe[0:5])) if len(fwe) > 5 else fwe_mean
     fwe_dusk = float(np.mean(fwe[5:9])) if len(fwe) > 8 else fwe_mean
+    fwe_night = float(np.mean(fwe[9:15])) if len(fwe) > 14 else fwe_mean
 
     # LPIPS
     lpips_scores = compute_lpips_temporal(frames)
-    lpips_dusk = float(np.mean(lpips_scores[5:9])) if len(lpips_scores) > 8 else None
     lpips_mean = float(np.mean(lpips_scores)) if len(lpips_scores) else None
+    lpips_day = float(np.mean(lpips_scores[0:5])) if len(lpips_scores) > 5 else lpips_mean
+    lpips_dusk = float(np.mean(lpips_scores[5:9])) if len(lpips_scores) > 8 else lpips_mean
+    lpips_night = float(np.mean(lpips_scores[9:15])) if len(lpips_scores) > 14 else lpips_mean
 
     # SSIM
     ssim_scores = compute_ssim_temporal(frames)
-    ssim_dusk = float(np.mean(ssim_scores[5:9])) if len(ssim_scores) > 8 else None
     ssim_mean = float(np.mean(ssim_scores)) if len(ssim_scores) else None
+    ssim_day = float(np.mean(ssim_scores[0:5])) if len(ssim_scores) > 5 else ssim_mean
+    ssim_dusk = float(np.mean(ssim_scores[5:9])) if len(ssim_scores) > 8 else ssim_mean
+    ssim_night = float(np.mean(ssim_scores[9:15])) if len(ssim_scores) > 14 else ssim_mean
 
     return {
         "clip_day_slope": day_slope,
         "clip_night_slope": night_slope,
         "clip_mid_separation": mid_sep,
         "fwe_mean": fwe_mean,
+        "fwe_day": fwe_day,
         "fwe_dusk": fwe_dusk,
+        "fwe_night": fwe_night,
         "lpips_mean": lpips_mean,
+        "lpips_day": lpips_day,
         "lpips_dusk": lpips_dusk,
+        "lpips_night": lpips_night,
         "ssim_mean": ssim_mean,
+        "ssim_day": ssim_day,
         "ssim_dusk": ssim_dusk,
+        "ssim_night": ssim_night,
         "num_frames": n,
     }
 
@@ -152,15 +164,14 @@ def main():
 
     # Aggregate per config
     if not df.empty:
-        summary = df.groupby("config").agg({
-            "clip_day_slope": ["mean", "std"],
-            "clip_night_slope": ["mean", "std"],
-            "clip_mid_separation": ["mean", "std"],
-            "fwe_mean": ["mean", "std"],
-            "fwe_dusk": ["mean", "std"],
-            "lpips_dusk": ["mean", "std"],
-            "ssim_dusk": ["mean", "std"],
-        }).round(4)
+        metrics_to_agg = [
+            "clip_day_slope", "clip_night_slope", "clip_mid_separation",
+            "fwe_mean", "fwe_day", "fwe_dusk", "fwe_night",
+            "lpips_mean", "lpips_day", "lpips_dusk", "lpips_night",
+            "ssim_mean", "ssim_day", "ssim_dusk", "ssim_night",
+        ]
+        agg_dict = {m: ["mean", "std"] for m in metrics_to_agg if m in df.columns}
+        summary = df.groupby("config").agg(agg_dict).round(4)
         summary.to_csv(output_dir / "ablation_summary.csv")
         print("\n" + "=" * 60)
         print("Ablation Summary")
