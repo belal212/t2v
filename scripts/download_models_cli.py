@@ -27,15 +27,19 @@ def run_cmd(cmd: list[str]) -> bool:
 
 
 def download_via_cli(repo_id: str, local_dir: Path, token: str | None) -> bool:
-    cmd = [
-        sys.executable, "-m", "huggingface_hub",
-        "download", repo_id,
-        "--local-dir", str(local_dir),
-        "--local-dir-use-symlinks", "False",
-    ]
-    if token:
-        cmd += ["--token", token]
-    return run_cmd(cmd)
+    # Try modern `hf` CLI first, then legacy `huggingface-cli`
+    for cli in ["hf", "huggingface-cli"]:
+        cmd = [
+            cli, "download", repo_id,
+            "--local-dir", str(local_dir),
+            "--local-dir-use-symlinks", "False",
+        ]
+        if token:
+            cmd += ["--token", token]
+        result = subprocess.run(cmd, capture_output=True)
+        if result.returncode == 0:
+            return True
+    return False
 
 
 def download_via_python(repo_id: str, local_dir: Path):
