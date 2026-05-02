@@ -249,7 +249,7 @@ class CombinedLoss(nn.Module):
         return result
 
 
-def aninate_diff_video_loss(
+def animate_diff_video_loss(
     noise_pred: torch.Tensor,
     noise_target: torch.Tensor,
     reduction: str = "mean",
