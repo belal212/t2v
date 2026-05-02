@@ -158,6 +158,60 @@ def test_logic() -> list[str]:
     except Exception as e:
         results.append(f"FAIL  logic   attention_bias: {e}")
 
+    # Position encodings
+    try:
+        from modeling.position_encoding import SinusoidalEncoding, TimestepEncoding, FramePositionEncoding, get_timestep_embedding
+        pe = SinusoidalEncoding(1000, 320)
+        emb = pe(torch.tensor([0, 100, 500, 999]))
+        assert emb.shape == torch.Size([4, 320])
+        assert not torch.allclose(emb[0], emb[3])
+        te = TimestepEncoding(1000, 320)
+        fe = FramePositionEncoding(16, 320)
+        assert te(torch.tensor([500])).shape == torch.Size([1, 320])
+        assert fe(torch.arange(16)).shape == torch.Size([16, 320])
+        results.append("PASS  logic   position_encoding")
+    except Exception as e:
+        results.append(f"FAIL  logic   position_encoding: {e}")
+
+    # VAE utils
+    try:
+        from modeling.vae_utils import VAEProcessor
+        class MockDist:
+            def sample(self): return torch.randn(2, 4, 64, 64)
+        class MockOut:
+            latent_dist = MockDist()
+        class MockDecodeOut:
+            sample = torch.randn(2, 3, 512, 512)
+        class MockVAE:
+            class Config:
+                scaling_factor = 0.18215
+            config = Config()
+            def encode(self, x): return MockOut()
+            def decode(self, z): return MockDecodeOut()
+        proc = VAEProcessor(MockVAE())
+        latents = proc.encode_frames(torch.rand(2, 3, 512, 512))
+        assert latents.shape == torch.Size([2, 4, 64, 64])
+        decoded = proc.decode_latents(latents)
+        assert decoded.shape == torch.Size([2, 3, 512, 512])
+        assert proc.spatial_compression == 8
+        results.append("PASS  logic   vae_utils")
+    except Exception as e:
+        results.append(f"FAIL  logic   vae_utils: {e}")
+
+    # Denoising loop tracer
+    try:
+        from modeling.denoising_loop import DenoisingLoopTracer
+        tracer = DenoisingLoopTracer(num_frames=16, num_timesteps=25)
+        trace = tracer.trace_step(24)
+        assert trace["z_t_shape"] == [16, 4, 64, 64], f"z_t_shape={trace['z_t_shape']}"
+        assert len(trace["blocks"]) > 0, f"blocks len={len(trace['blocks'])}"
+        assert trace["blocks"][0]["name"] == "Down 1", f"first block={trace['blocks'][0]['name']}"
+        full = tracer.trace_full()
+        assert len(full) == 25, f"full len={len(full)}"
+        results.append("PASS  logic   denoising_loop")
+    except Exception as e:
+        results.append(f"FAIL  logic   denoising_loop: {e}")
+
     # TTS pipeline
     try:
         from tts.tts_pipeline import select_voice, parse_emotion, insert_pause_tokens, generate_narration_script
@@ -185,6 +239,9 @@ def main():
         ("modeling.losses", ["EpsilonLoss", "TemporalSmoothnessLoss", "CombinedLoss"]),
         ("modeling.prompt_interpolation", ["interpolate_prompt_embeddings", "sigmoid_schedule"]),
         ("modeling.attention_bias", ["TemporalBias", "BiasAttentionProcessor"]),
+        ("modeling.position_encoding", ["SinusoidalEncoding", "TimestepEncoding", "FramePositionEncoding"]),
+        ("modeling.vae_utils", ["VAEProcessor", "create_vae_processor"]),
+        ("modeling.denoising_loop", ["DenoisingLoopTracer"]),
         ("eval.weakness_analysis", ["load_frames", "compute_flow_warping_error"]),
         ("tts.tts_pipeline", ["QwenTTSPipeline", "select_voice", "parse_emotion"]),
     ]
@@ -194,12 +251,14 @@ def main():
         ("scripts/batch_infer.py", "Multi-GPU"),
         ("scripts/download_models_cli.py", "HuggingFace"),
         ("scripts/env_check.py", "Environment"),
+        ("scripts/inspect_architecture.py", "Inspect"),
         ("inference/inference_enhanced.py", "Enhanced"),
         ("training/train_smoothness.py", "Fine-tune"),
         ("eval/eval.py", "evaluation"),
         ("eval/run_ablation.py", "ablation"),
         ("eval/weakness_analysis.py", "Weakness"),
         ("tts/tts_pipeline.py", "Qwen"),
+        ("modeling/denoising_loop.py", "Denoising"),
     ]
 
     print("=" * 60)
