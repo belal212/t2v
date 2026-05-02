@@ -243,6 +243,7 @@ def main():
         ("modeling.vae_utils", ["VAEProcessor", "create_vae_processor"]),
         ("modeling.denoising_loop", ["DenoisingLoopTracer"]),
         ("eval.weakness_analysis", ["load_frames", "compute_flow_warping_error"]),
+        ("eval.run_weakness_analysis", ["compute_metrics"]),
         ("tts.tts_pipeline", ["QwenTTSPipeline", "select_voice", "parse_emotion"]),
     ]
 
@@ -257,6 +258,7 @@ def main():
         ("eval/eval.py", "evaluation"),
         ("eval/run_ablation.py", "ablation"),
         ("eval/weakness_analysis.py", "Weakness"),
+        ("eval/run_weakness_analysis.py", "Weakness"),
         ("tts/tts_pipeline.py", "Qwen"),
         ("modeling/denoising_loop.py", "Denoising"),
     ]
