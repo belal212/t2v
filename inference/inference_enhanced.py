@@ -2,42 +2,60 @@
 """
 Enhanced Inference Pipeline — AnimateDiff with A + B + C
 
+This is the CORE implementation of the project's three enhancements.
+Uses a custom denoising loop to enable all three simultaneously.
+
+Design decisions:
+  - Enhancement A: Separate UNet forward passes for uncond (single neg emb)
+                   and cond (per-frame day/night embeddings [N, 77, 768]).
+                   The UNet's cross-attention naturally uses the N-dim batch.
+  - Enhancement B: Latent-space blending applied after denoising, before VAE decode.
+  - Enhancement C: Patches the motion module's temporal self-attention (attn1 in
+                   AnimateDiffTransformer3D transformer blocks) to add γ(t)·B
+                   to attention scores via manual attention computation.
+
 Usage:
     python inference/inference_enhanced.py \
         --config C4_A_B_C \
-        --prompt-day "bright sunny day" \
-        --prompt-night "dark night city" \
+        --prompt "cinematic time-lapse of a city skyline..." \
+        --prompt-day "bright sunny day in a city" \
+        --prompt-night "dark night city skyline, neon lights" \
         --output outputs/enhanced/test.gif
 
 Configs:
     C0_baseline  → no enhancements
-    C1_A_only    → Enhancement A (prompt interpolation)
-    C2_B_only    → Enhancement B (frame blending)
+    C1_A_only    → Enhancement A (sigmoid prompt interpolation)
+    C2_B_only    → Enhancement B (latent frame blending)
     C3_A_plus_B  → A + B
     C4_A_B_C     → A + B + C (full)
 """
 
 import argparse
-import math
 import sys
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from diffusers import AnimateDiffPipeline, MotionAdapter, DDIMScheduler
 from diffusers.utils import export_to_gif
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from modeling.prompt_interpolation import interpolate_prompt_embeddings, get_negative_embedding
-from modeling.attention_bias import TemporalBias, BiasAttentionProcessor
+from modeling.attention_bias import TemporalBias
 
+
+# ─── Enhancement B: Latent-Space Frame Blending ───────────────────────────
 
 def apply_frame_blend(latents: torch.Tensor, beta: float = 0.3) -> torch.Tensor:
     """
-    Enhancement B: Blend adjacent frame latents to reduce flicker.
+    Blends adjacent frame latents to smooth the dusk transition.
+
+    z_blend^i   = (1-β)·z^i + β·z^{i+1}
+    z_blend^{i+1} = β·z^i + (1-β)·z^{i+1}
 
     Args:
-        latents: [N, 4, H, W] latent tensor.
+        latents: [N, 4, H/8, W/8] latent tensor.
         beta: Blending coefficient.
 
     Returns:
@@ -45,13 +63,149 @@ def apply_frame_blend(latents: torch.Tensor, beta: float = 0.3) -> torch.Tensor:
     """
     blended = latents.clone()
     for i in range(len(latents) - 1):
-        blended[i] = (1.0 - beta) * latents[i] + beta * latents[i + 1]
+        blended[i]   = (1.0 - beta) * latents[i]   + beta * latents[i + 1]
         blended[i + 1] = beta * latents[i] + (1.0 - beta) * latents[i + 1]
     return blended
 
 
+# ─── Enhancement C: Temporal Bias Injection ────────────────────────────────
+
+class _BiasTemporalAttnProcessor:
+    """
+    Attention processor for temporal self-attention in AnimateDiff motion modules.
+
+    Computes: Softmax(QK^T / sqrt(d_k) + γ(t)·B) · V
+    where B is the learned bias from TemporalBias and γ(t) = 1 - t/T ∈ [0,1].
+
+    Uses manual attention (not F.scaled_dot_product_attention) to allow
+    bias injection into the scores before softmax.
+    """
+
+    def __init__(self, bias_module: TemporalBias, t_source):
+        self.bias_module = bias_module
+        self._t_source = t_source
+
+    def __call__(self, attn, hidden_states, encoder_hidden_states=None,
+                 attention_mask=None, temb=None, *args, **kwargs):
+        from diffusers.utils import deprecate
+        if len(args) > 0 or (kwargs and kwargs.get("scale")):
+            deprecate("scale", "1.0.0", "")
+
+        residual = hidden_states
+        if attn.spatial_norm is not None:
+            hidden_states = attn.spatial_norm(hidden_states, temb)
+
+        input_ndim = hidden_states.ndim
+        if input_ndim == 4:
+            B, C, H, W = hidden_states.shape
+            hidden_states = hidden_states.view(B, C, H * W).transpose(1, 2)
+
+        batch_size, seq_len, _ = (
+            hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
+        )
+
+        if attention_mask is not None:
+            attention_mask = attn.prepare_attention_mask(attention_mask, seq_len, batch_size)
+            attention_mask = attention_mask.view(batch_size, attn.heads, -1, attention_mask.shape[-1])
+
+        if attn.group_norm is not None:
+            hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
+
+        Q = attn.to_q(hidden_states)
+        if encoder_hidden_states is None:
+            K = attn.to_k(hidden_states)
+            V = attn.to_v(hidden_states)
+        else:
+            if attn.norm_cross:
+                encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
+            K = attn.to_k(encoder_hidden_states)
+            V = attn.to_v(encoder_hidden_states)
+
+        inner_dim = K.shape[-1]
+        head_dim = inner_dim // attn.heads
+
+        Q = Q.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)  # [B, h, L, d]
+        K = K.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)  # [B, h, S, d]
+        V = V.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)  # [B, h, S, d]
+
+        if attn.norm_q is not None: Q = attn.norm_q(Q)
+        if attn.norm_k is not None: K = attn.norm_k(K)
+
+        # ── Enhancement C: Add temporal bias to attention scores ──
+        # Temporal self-attention operates on sequence of N frames.
+        # When the key sequence length matches num_frames, we inject bias.
+        N = self.bias_module.num_frames
+        if K.shape[-2] == N and encoder_hidden_states is None:
+            t = self._t_source.current_t
+            T = self._t_source.max_T
+            gamma = 1.0 - (t / max(T, 1))
+            # QK^T / sqrt(d_k) + γ(t)·B
+            scores = torch.matmul(Q, K.transpose(-2, -1)) / (head_dim ** 0.5)
+            scores = scores + gamma * self.bias_module.bias.to(scores.dtype, scores.device)
+            attn_weights = F.softmax(scores, dim=-1)
+            hidden_states = torch.matmul(attn_weights, V)
+        else:
+            hidden_states = F.scaled_dot_product_attention(
+                Q, K, V, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+            )
+
+        hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
+        hidden_states = hidden_states.to(Q.dtype)
+        hidden_states = attn.to_out[0](hidden_states)
+        hidden_states = attn.to_out[1](hidden_states)
+
+        if input_ndim == 4:
+            hidden_states = hidden_states.transpose(-1, -2).reshape(B, C, H, W)
+
+        if attn.residual_connection:
+            hidden_states = hidden_states + residual
+
+        return hidden_states / attn.rescale_output_factor
+
+
+class TemporalBiasInjector:
+    """
+    Injects Enhancement C bias into AnimateDiff motion modules.
+
+    Finds all transformer blocks inside AnimateDiffTransformer3D modules
+    and patches their attn1 (temporal self-attention) processor.
+    """
+
+    def __init__(self, unet, bias_module: TemporalBias):
+        self.unet = unet
+        self.bias_module = bias_module
+        self.current_t = 999
+        self.max_T = 1000
+        self._hooks = []  # (module, original_processor)
+        self._patch()
+
+    def set_timestep(self, t, T=1000):
+        self.current_t = t
+        self.max_T = T
+
+    def _patch(self):
+        custom_proc = _BiasTemporalAttnProcessor(self.bias_module, self)
+
+        for name, module in self.unet.named_modules():
+            # Target: BasicTransformerBlock inside AnimateDiffTransformer3D
+            # These are motion module transformer blocks
+            if "transformer_block" in name.lower() and hasattr(module, "attn1"):
+                # attn1 is temporal self-attention in AnimateDiff
+                old = module.attn1.processor
+                module.attn1.processor = custom_proc
+                self._hooks.append((module.attn1, old))
+                # Note: attn_temp is the spatial self-attention (double_self_attention)
+                # We do NOT bias that — only temporal attn
+
+    def remove(self):
+        for attn_module, old_proc in self._hooks:
+            attn_module.processor = old_proc
+        self._hooks.clear()
+
+
+# ─── Pipeline Setup ────────────────────────────────────────────────────────
+
 def setup_pipeline(base_model: str, motion_module: str, device: str = "cuda"):
-    """Load AnimateDiff pipeline with DDIM scheduler."""
     adapter = MotionAdapter.from_pretrained(motion_module, torch_dtype=torch.float16)
     pipe = AnimateDiffPipeline.from_pretrained(
         base_model,
@@ -61,7 +215,52 @@ def setup_pipeline(base_model: str, motion_module: str, device: str = "cuda"):
     pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
     pipe = pipe.to(device)
     pipe.enable_vae_slicing()
+    pipe.enable_xformers_memory_efficient_attention()
     return pipe
+
+
+# ─── Core Denoising ────────────────────────────────────────────────────────
+
+def compute_noise_pred(
+    pipe,
+    latents: torch.Tensor,
+    t: torch.Tensor,
+    guidance_scale: float,
+    uncond_emb: torch.Tensor,
+    cond_emb: torch.Tensor,
+    per_frame_emb: torch.Tensor | None,
+    enh_a: bool,
+    enh_c_injector: TemporalBiasInjector | None,
+):
+    """
+    Compute CFG-guided noise prediction.
+    Enhancement A: conditional forward uses per-frame embeddings [N, 77, 768].
+    Enhancement C: injector timestep is updated for bias gamma.
+    """
+    latent_input = pipe.scheduler.scale_model_input(latents, t)
+
+    if enh_c_injector is not None:
+        enh_c_injector.set_timestep(t.item(), pipe.scheduler.config.num_train_timesteps)
+
+    # Unconditional: same negative embedding for all frames
+    noise_uncond = pipe.unet(
+        latent_input, t,
+        encoder_hidden_states=uncond_emb,
+    ).sample
+
+    # Conditional: per-frame embeddings or single cond embedding
+    if enh_a and per_frame_emb is not None:
+        noise_cond = pipe.unet(
+            latent_input, t,
+            encoder_hidden_states=per_frame_emb,
+        ).sample
+    else:
+        noise_cond = pipe.unet(
+            latent_input, t,
+            encoder_hidden_states=cond_emb,
+        ).sample
+
+    return noise_uncond + guidance_scale * (noise_cond - noise_uncond)
 
 
 def generate_enhanced(
@@ -78,27 +277,6 @@ def generate_enhanced(
     blend_beta: float = 0.3,
     device: str = "cuda",
 ):
-    """
-    Generate video with configurable enhancements.
-
-    Args:
-        pipe: AnimateDiffPipeline.
-        prompt: Full text prompt (used for baseline; day/night split for Enh A).
-        prompt_day: Day prompt for Enhancement A interpolation.
-        prompt_night: Night prompt for Enhancement A interpolation.
-        negative_prompt: Negative prompt.
-        num_frames: Number of frames.
-        num_inference_steps: DDIM steps.
-        guidance_scale: CFG scale.
-        seed: Random seed.
-        config: One of C0_baseline, C1_A_only, C2_B_only, C3_A_plus_B, C4_A_B_C.
-        blend_beta: Frame blending coefficient for Enhancement B.
-        device: CUDA device.
-
-    Returns:
-        List of PIL Images (frames).
-    """
-    # Parse config flags
     cfg_map = {
         "C0_baseline":  {"interp": False, "blend": 0.0, "bias": False},
         "C1_A_only":    {"interp": True,  "blend": 0.0, "bias": False},
@@ -111,82 +289,83 @@ def generate_enhanced(
     flags = cfg_map[config]
 
     print(f"Config: {config}")
-    print(f"  Enhancement A (prompt interp): {flags['interp']}")
-    print(f"  Enhancement B (frame blend):   {flags['blend']}")
-    print(f"  Enhancement C (attn bias):     {flags['bias']}")
+    print(f"  Enhancement A: {flags['interp']}")
+    print(f"  Enhancement B: beta={flags['blend']}")
+    print(f"  Enhancement C: {flags['bias']}")
 
-    generator = torch.Generator(device=device).manual_seed(seed)
-
-    # Enhancement A: per-frame embeddings
+    # ── Text embeddings ──
     if flags["interp"]:
-        print("Computing per-frame prompt embeddings (Enhancement A)...")
-        embeddings = interpolate_prompt_embeddings(
+        print("Precomputing per-frame day/night embeddings (Enh A)...")
+        per_frame_emb = interpolate_prompt_embeddings(
             pipe, prompt_day, prompt_night, num_frames, k=6.0
         )
-        # Use the interpolated embeddings via the pipeline's internal mechanism
-        # We pass prompt=None and use encoder_hidden_states directly
-        # For diffusers AnimateDiffPipeline, we can use the __call__ method
-        # which accepts encoder_hidden_states
-        negative_emb = get_negative_embedding(pipe, negative_prompt)
-
-        output = pipe(
-            prompt=prompt,  # Still pass prompt for any internal use
-            negative_prompt=negative_prompt,
-            num_frames=num_frames,
-            guidance_scale=guidance_scale,
-            num_inference_steps=num_inference_steps,
-            generator=generator,
-        )
     else:
-        output = pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            num_frames=num_frames,
-            guidance_scale=guidance_scale,
-            num_inference_steps=num_inference_steps,
-            generator=generator,
-        )
+        per_frame_emb = None
 
-    frames = output.frames[0]  # List of PIL Images
+    with torch.no_grad():
+        uncond_emb = get_negative_embedding(pipe, negative_prompt)     # [1, 77, 768]
+        cond_emb = pipe._encode_prompt(prompt, device=device,
+            num_images_per_prompt=1, do_classifier_free_guidance=False)  # [1, 77, 768]
 
-    # Enhancement B: inference-time frame blending
-    # Note: Frame blending on pixel space is a fallback.
-    # Ideal implementation blends in latent space before VAE decode.
-    # Since diffusers handles latents internally, we apply a mild pixel blend here.
-    if flags["blend"] > 0.0:
-        print(f"Applying frame blending (beta={flags['blend']})...")
-        frames = pixel_frame_blend(frames, beta=flags["blend"])
+    # ── Latents ──
+    generator = torch.Generator(device=device).manual_seed(seed)
+    latents = torch.randn(
+        1, num_frames, 4, 64, 64,
+        generator=generator, device=device, dtype=torch.float16,
+    )
 
-    # Enhancement C: attention bias
-    # This requires modifying the pipeline's motion module attention processors.
-    # We apply the bias module to the pipeline before generation if enabled.
+    # ── Enhancement C: inject bias into motion module temporal attention ──
+    enh_c_injector = None
     if flags["bias"]:
-        print("Temporal attention bias enabled (Enhancement C)")
-        # The bias is applied during the forward pass; for this script,
-        # we note that full integration requires custom attention processor setup.
-        # See modeling/attention_bias.py for integration details.
+        print("Injecting temporal attention bias (Enh C)...")
+        bias_mod = TemporalBias(num_frames=num_frames).to(device, dtype=torch.float16)
+        enh_c_injector = TemporalBiasInjector(pipe.unet, bias_mod)
+        pipe.unet = pipe.unet  # re-register to apply processor changes
 
-    return frames
+    # ── Denoising loop ──
+    timesteps = pipe.scheduler.timesteps[:num_inference_steps]
+    print(f"Denoising {len(timesteps)} steps...")
+
+    for step_idx, t in enumerate(timesteps):
+        noise_pred = compute_noise_pred(
+            pipe, latents, t.unsqueeze(0), guidance_scale,
+            uncond_emb, cond_emb, per_frame_emb,
+            flags["interp"], enh_c_injector,
+        )
+        latents = pipe.scheduler.step(noise_pred, t, latents).prev_sample
+
+        if step_idx % 5 == 0 or step_idx == num_inference_steps - 1:
+            print(f"  Step {step_idx+1}/{num_inference_steps}  "
+                  f"t={t.item():>4.0f}  noise_std={noise_pred.std().item():.4f}  "
+                  f"latent_std={latents.std().item():.4f}")
+
+    # Remove bias hooks
+    if enh_c_injector is not None:
+        enh_c_injector.remove()
+
+    # ── Enhancement B: latent-space frame blending ──
+    if flags["blend"] > 0.0:
+        print(f"Latent frame blending (beta={flags['blend']})...")
+        latents[0] = apply_frame_blend(latents[0], beta=flags["blend"])
+
+    # ── Decode ──
+    print("Decoding to pixel space...")
+    frames = pipe.vae.decode(
+        (latents / pipe.vae.config.scaling_factor).to(torch.float16)
+    ).sample
+
+    return _tensor_to_pil(frames[0])
 
 
-def pixel_frame_blend(frames, beta: float = 0.3):
-    """
-    Fallback pixel-space frame blending.
-    Latent-space blending is preferred but requires custom denoising loop.
-    """
-    import numpy as np
+# ─── Helpers ───────────────────────────────────────────────────────────────
+
+def _tensor_to_pil(tensor: torch.Tensor):
     from PIL import Image
-
-    blended = []
-    for i in range(len(frames)):
-        if i == 0:
-            blended.append(frames[i])
-        else:
-            arr_prev = np.array(frames[i - 1]).astype(np.float32)
-            arr_curr = np.array(frames[i]).astype(np.float32)
-            arr_blend = (1.0 - beta) * arr_curr + beta * arr_prev
-            blended.append(Image.fromarray(arr_blend.astype(np.uint8)))
-    return blended
+    tensor = (tensor / 2.0 + 0.5).clamp(0, 1)
+    return [
+        Image.fromarray((tensor[i].permute(1, 2, 0).cpu().numpy() * 255).astype("uint8"))
+        for i in range(tensor.shape[0])
+    ]
 
 
 def main():
@@ -216,7 +395,6 @@ def main():
     print("=" * 60)
 
     pipe = setup_pipeline(args.base_model, args.motion_module, args.device)
-
     frames = generate_enhanced(
         pipe,
         prompt=args.prompt,
@@ -231,7 +409,6 @@ def main():
         blend_beta=args.blend_beta,
         device=args.device,
     )
-
     export_to_gif(frames, args.output)
     print(f"\n✓ Saved {len(frames)} frames to: {args.output}")
     print("=" * 60)
