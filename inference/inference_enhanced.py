@@ -55,16 +55,17 @@ def apply_frame_blend(latents: torch.Tensor, beta: float = 0.3) -> torch.Tensor:
     z_blend^{i+1} = β·z^i + (1-β)·z^{i+1}
 
     Args:
-        latents: [N, 4, H/8, W/8] latent tensor.
+        latents: [4, N, H/8, W/8] latent tensor.
         beta: Blending coefficient.
 
     Returns:
         Blended latents of same shape.
     """
     blended = latents.clone()
-    for i in range(len(latents) - 1):
-        blended[i]   = (1.0 - beta) * latents[i]   + beta * latents[i + 1]
-        blended[i + 1] = beta * latents[i] + (1.0 - beta) * latents[i + 1]
+    num_frames = latents.shape[1]
+    for i in range(num_frames - 1):
+        blended[:, i] = (1.0 - beta) * latents[:, i] + beta * latents[:, i + 1]
+        blended[:, i + 1] = beta * latents[:, i] + (1.0 - beta) * latents[:, i + 1]
     return blended
 
 
@@ -141,7 +142,10 @@ class _BiasTemporalAttnProcessor:
             gamma = 1.0 - (t / max(T, 1))
             # QK^T / sqrt(d_k) + γ(t)·B
             scores = torch.matmul(Q, K.transpose(-2, -1)) / (head_dim ** 0.5)
-            scores = scores + gamma * self.bias_module.bias.to(scores.dtype, scores.device)
+            scores = scores + gamma * self.bias_module.bias.to(
+                device=scores.device,
+                dtype=scores.dtype,
+            )
             attn_weights = F.softmax(scores, dim=-1)
             hidden_states = torch.matmul(attn_weights, V)
         else:
@@ -205,7 +209,12 @@ class TemporalBiasInjector:
 
 # ─── Pipeline Setup ────────────────────────────────────────────────────────
 
-def setup_pipeline(base_model: str, motion_module: str, device: str = "cuda"):
+def setup_pipeline(
+    base_model: str,
+    motion_module: str,
+    device: str = "cuda",
+    cpu_offload: bool = False,
+):
     adapter = MotionAdapter.from_pretrained(motion_module, torch_dtype=torch.float16)
     pipe = AnimateDiffPipeline.from_pretrained(
         base_model,
@@ -213,9 +222,23 @@ def setup_pipeline(base_model: str, motion_module: str, device: str = "cuda"):
         torch_dtype=torch.float16,
     )
     pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-    pipe = pipe.to(device)
     pipe.enable_vae_slicing()
-    pipe.enable_xformers_memory_efficient_attention()
+    if cpu_offload:
+        print("[INFO] Enabling model CPU offload")
+        gpu_id = 0
+        if device.startswith("cuda:"):
+            try:
+                gpu_id = int(device.split(":", 1)[1])
+            except ValueError:
+                gpu_id = 0
+        pipe.to("cpu")
+        pipe.enable_model_cpu_offload(gpu_id=gpu_id)
+    else:
+        pipe = pipe.to(device)
+    try:
+        pipe.enable_xformers_memory_efficient_attention()
+    except ModuleNotFoundError:
+        print("[WARN] xformers not installed; continuing without memory-efficient attention.")
     return pipe
 
 
@@ -304,13 +327,22 @@ def generate_enhanced(
 
     with torch.no_grad():
         uncond_emb = get_negative_embedding(pipe, negative_prompt)     # [1, 77, 768]
-        cond_emb = pipe._encode_prompt(prompt, device=device,
-            num_images_per_prompt=1, do_classifier_free_guidance=False)  # [1, 77, 768]
+        cond_emb, _ = pipe.encode_prompt(
+            prompt,
+            device=device,
+            num_images_per_prompt=1,
+            do_classifier_free_guidance=False,
+        )  # [1, 77, 768]
+
+    # AnimateDiff flattens frames into the batch dimension; repeat embeddings to match.
+    uncond_emb = uncond_emb.repeat(num_frames, 1, 1)
+    if per_frame_emb is None:
+        cond_emb = cond_emb.repeat(num_frames, 1, 1)
 
     # ── Latents ──
     generator = torch.Generator(device=device).manual_seed(seed)
     latents = torch.randn(
-        1, num_frames, 4, 64, 64,
+        1, 4, num_frames, 64, 64,
         generator=generator, device=device, dtype=torch.float16,
     )
 
@@ -323,21 +355,23 @@ def generate_enhanced(
         pipe.unet = pipe.unet  # re-register to apply processor changes
 
     # ── Denoising loop ──
-    timesteps = pipe.scheduler.timesteps[:num_inference_steps]
+    pipe.scheduler.set_timesteps(num_inference_steps, device=device)
+    timesteps = pipe.scheduler.timesteps
     print(f"Denoising {len(timesteps)} steps...")
 
-    for step_idx, t in enumerate(timesteps):
-        noise_pred = compute_noise_pred(
-            pipe, latents, t.unsqueeze(0), guidance_scale,
-            uncond_emb, cond_emb, per_frame_emb,
-            flags["interp"], enh_c_injector,
-        )
-        latents = pipe.scheduler.step(noise_pred, t, latents).prev_sample
+    with torch.no_grad():
+        for step_idx, t in enumerate(timesteps):
+            noise_pred = compute_noise_pred(
+                pipe, latents, t.unsqueeze(0), guidance_scale,
+                uncond_emb, cond_emb, per_frame_emb,
+                flags["interp"], enh_c_injector,
+            )
+            latents = pipe.scheduler.step(noise_pred, t, latents).prev_sample
 
-        if step_idx % 5 == 0 or step_idx == num_inference_steps - 1:
-            print(f"  Step {step_idx+1}/{num_inference_steps}  "
-                  f"t={t.item():>4.0f}  noise_std={noise_pred.std().item():.4f}  "
-                  f"latent_std={latents.std().item():.4f}")
+            if step_idx % 5 == 0 or step_idx == num_inference_steps - 1:
+                print(f"  Step {step_idx+1}/{num_inference_steps}  "
+                      f"t={t.item():>4.0f}  noise_std={noise_pred.std().item():.4f}  "
+                      f"latent_std={latents.std().item():.4f}")
 
     # Remove bias hooks
     if enh_c_injector is not None:
@@ -350,11 +384,15 @@ def generate_enhanced(
 
     # ── Decode ──
     print("Decoding to pixel space...")
-    frames = pipe.vae.decode(
-        (latents / pipe.vae.config.scaling_factor).to(torch.float16)
-    ).sample
+    with torch.no_grad():
+        b, c, f, h, w = latents.shape
+        latents_2d = latents.permute(0, 2, 1, 3, 4).reshape(b * f, c, h, w)
+        frames = pipe.vae.decode(
+            (latents_2d / pipe.vae.config.scaling_factor).to(torch.float16)
+        ).sample
+        frames = frames.reshape(b, f, 3, frames.shape[-2], frames.shape[-1]).squeeze(0)
 
-    return _tensor_to_pil(frames[0])
+    return _tensor_to_pil(frames)
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────
@@ -386,6 +424,7 @@ def main():
     parser.add_argument("--blend-beta", type=float, default=0.3)
     parser.add_argument("--output", required=True)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--cpu-offload", action="store_true")
     args = parser.parse_args()
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
@@ -394,7 +433,12 @@ def main():
     print("Enhanced Inference — Urban Metamorphosis")
     print("=" * 60)
 
-    pipe = setup_pipeline(args.base_model, args.motion_module, args.device)
+    pipe = setup_pipeline(
+        args.base_model,
+        args.motion_module,
+        device=args.device,
+        cpu_offload=args.cpu_offload,
+    )
     frames = generate_enhanced(
         pipe,
         prompt=args.prompt,
