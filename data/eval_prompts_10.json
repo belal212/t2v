@@ -1,0 +1,92 @@
+[
+  {
+    "id": 0,
+    "category": "skyline",
+    "prompt": "cinematic time-lapse of a city skyline transitioning from day to night, modern glass skyscrapers reflecting golden sunset, neon lights flickering on, starry sky emerging, 4k, highly detailed",
+    "prompt_day": "bright sunny day in a modern city, clear blue sky, glass skyscrapers reflecting sunlight",
+    "prompt_night": "dark night city skyline, neon lights illuminating glass skyscrapers, starry sky, urban glow",
+    "difficulty": "normal",
+    "test_aspect": "general"
+  },
+  {
+    "id": 1,
+    "category": "skyline",
+    "prompt": "cinematic time-lapse of a downtown skyline transitioning from day to night, warm afternoon light on concrete buildings, street lights and office windows glowing after sunset, 4k, highly detailed",
+    "prompt_day": "bright sunny afternoon in downtown, warm light on concrete buildings, clear sky",
+    "prompt_night": "dark downtown skyline at night, street lights glowing, office windows lit up, urban night scene",
+    "difficulty": "normal",
+    "test_aspect": "general"
+  },
+  {
+    "id": 2,
+    "category": "skyline",
+    "prompt": "cinematic time-lapse of a waterfront skyline transitioning from day to night, sun setting over harbor, city lights reflecting on calm water, boats with lights, 4k, highly detailed",
+    "prompt_day": "sunny waterfront skyline, bright blue water, clear sky, harbor in daylight",
+    "prompt_night": "night waterfront skyline, city lights reflecting on dark water, harbor with boat lights",
+    "difficulty": "normal",
+    "test_aspect": "general"
+  },
+  {
+    "id": 3,
+    "category": "skyline",
+    "prompt": "cinematic time-lapse of a futuristic skyline transitioning from day to night, holographic billboards activating at dusk, flying vehicles with lights, cyberpunk atmosphere, 4k, highly detailed",
+    "prompt_day": "futuristic city in bright daylight, modern architecture, clear sky",
+    "prompt_night": "futuristic cyberpunk city at night, holographic billboards, neon lights, flying vehicles",
+    "difficulty": "normal",
+    "test_aspect": "general"
+  },
+  {
+    "id": 4,
+    "category": "skyline",
+    "prompt": "cinematic time-lapse of a historic European skyline transitioning from day to night, golden hour on old stone buildings, warm street lamps illuminating cobblestone streets, moonrise, 4k, highly detailed",
+    "prompt_day": "historic European city in bright daylight, old stone buildings, clear sky",
+    "prompt_night": "historic European city at night, warm street lamps, moonlit stone buildings, cobblestone streets",
+    "difficulty": "normal",
+    "test_aspect": "general"
+  },
+  {
+    "id": 5,
+    "category": "street",
+    "prompt": "cinematic time-lapse of a busy city street transitioning from day to night, afternoon shadows lengthening, neon storefront signs and street lamps taking over, car headlights streaming, 4k, highly detailed",
+    "prompt_day": "sunlit busy city street, bright daylight, pedestrians, clear shadows",
+    "prompt_night": "night city street with neon storefronts, street lamps, car headlights, dark atmosphere",
+    "difficulty": "normal",
+    "test_aspect": "general"
+  },
+  {
+    "id": 6,
+    "category": "street",
+    "prompt": "cinematic time-lapse of a narrow alley transitioning from day to night, afternoon light filtering between buildings, warm glow from cafe windows and string lights after dark, 4k, highly detailed",
+    "prompt_day": "sunlit narrow city alley, light filtering between buildings, bright afternoon",
+    "prompt_night": "dark narrow alley at night, warm cafe window glow, string lights, intimate atmosphere",
+    "difficulty": "normal",
+    "test_aspect": "general"
+  },
+  {
+    "id": 7,
+    "category": "street",
+    "prompt": "cinematic time-lapse of a neon-lit street transitioning from day to night, ordinary shops in daylight transforming into vibrant neon signs, reflections on wet pavement, 4k, highly detailed",
+    "prompt_day": "ordinary city street in bright daylight, shops and pedestrians, clear sky",
+    "prompt_night": "vibrant neon-lit street at night, colorful signs reflecting on wet pavement, nightlife",
+    "difficulty": "normal",
+    "test_aspect": "general"
+  },
+  {
+    "id": 8,
+    "category": "street",
+    "prompt": "cinematic time-lapse of a wide boulevard transitioning from day to night, tree-lined avenue in afternoon sun, ornate street lamps casting warm pools of light after sunset, 4k, highly detailed",
+    "prompt_day": "tree-lined city boulevard in bright afternoon sun, wide avenue, clear sky",
+    "prompt_night": "tree-lined boulevard at night, ornate street lamps, warm pools of light, elegant atmosphere",
+    "difficulty": "normal",
+    "test_aspect": "general"
+  },
+  {
+    "id": 9,
+    "category": "street",
+    "prompt": "cinematic time-lapse of a shopping district transitioning from day to night, bright storefronts in daylight, illuminated window displays and LED signs after dark, bustling nightlife, 4k, highly detailed",
+    "prompt_day": "busy shopping district in bright daylight, storefronts, pedestrians, sunny",
+    "prompt_night": "shopping district at night, illuminated window displays, LED signs, bustling nightlife",
+    "difficulty": "normal",
+    "test_aspect": "general"
+  }
+]

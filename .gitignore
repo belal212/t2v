@@ -21,3 +21,9 @@ dist/
 
 .ipynb_checkpoints/
 .DS_Store
+
+# Generated outputs
+outputs/
+*.gif
+*.mp4
+*.wav

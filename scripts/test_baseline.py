@@ -16,7 +16,7 @@ from pathlib import Path
 
 import torch
 from diffusers import AnimateDiffPipeline, MotionAdapter, DDIMScheduler
-from diffusers.utils import export_to_gif
+from diffusers.utils import export_to_gif, export_to_video
 
 
 def main():
@@ -108,7 +108,11 @@ def main():
 
     # Export
     frames = output.frames[0]
-    export_to_gif(frames, args.output)
+    ext = Path(args.output).suffix.lower()
+    if ext == ".mp4":
+        export_to_video(frames, args.output, fps=8)
+    else:
+        export_to_gif(frames, args.output)
     print(f"\n✓ Baseline inference successful!")
     print(f"  Saved {len(frames)} frames to: {args.output}")
     print("=" * 60)

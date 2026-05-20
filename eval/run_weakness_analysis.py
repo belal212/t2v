@@ -18,8 +18,8 @@ Output structure (matching the plan):
       summary.json
 
 Usage:
-    python eval/run_weakness_analysis.py \
-        --prompts data/eval_prompts.json \
+    python3 eval/run_weakness_analysis.py \
+        --prompts data/eval_prompts_10.json \
         --output-dir outputs/baseline \
         --base-model models/stable-diffusion-v1-5 \
         --motion-module models/motion-module \

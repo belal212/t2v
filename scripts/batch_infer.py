@@ -22,7 +22,7 @@ from pathlib import Path
 
 import torch
 from diffusers import AnimateDiffPipeline, MotionAdapter, DDIMScheduler
-from diffusers.utils import export_to_gif
+from diffusers.utils import export_to_gif, export_to_video
 
 
 def load_prompts(path: str) -> list[dict]:
@@ -41,6 +41,8 @@ def run_on_gpu(
     guidance_scale: float,
     num_steps: int,
     negative_prompt: str,
+    ext: str = ".gif",
+    fps: int = 8,
 ):
     """Worker function executed in a separate process per GPU."""
     torch.cuda.set_device(gpu_id)
@@ -64,7 +66,7 @@ def run_on_gpu(
         prompt_text = p["prompt"]
 
         for seed in seeds:
-            out_path = gpu_out / f"prompt_{pid}_seed{seed}.gif"
+            out_path = gpu_out / f"prompt_{pid}_seed{seed}{ext}"
             if out_path.exists():
                 print(f"  [GPU{gpu_id}] Skip existing: {out_path.name}")
                 continue
@@ -79,7 +81,10 @@ def run_on_gpu(
                 num_inference_steps=num_steps,
                 generator=generator,
             )
-            export_to_gif(output.frames[0], str(out_path))
+            if ext == ".mp4":
+                export_to_video(output.frames[0], str(out_path), fps=fps)
+            else:
+                export_to_gif(output.frames[0], str(out_path))
 
     print(f"[GPU{gpu_id}] Done.")
 
@@ -96,6 +101,8 @@ def main():
     parser.add_argument("--num-inference-steps", type=int, default=25)
     parser.add_argument("--negative-prompt", default="static, flickering, low quality")
     parser.add_argument("--num-gpus", type=int, default=None, help="Override auto-detect")
+    parser.add_argument("--ext", default=".gif", choices=[".gif", ".mp4"], help="Output format")
+    parser.add_argument("--fps", type=int, default=8, help="FPS for MP4 output")
     args = parser.parse_args()
 
     prompts = load_prompts(args.prompts)
@@ -135,6 +142,8 @@ def main():
                 args.guidance_scale,
                 args.num_inference_steps,
                 args.negative_prompt,
+                args.ext,
+                args.fps,
             ),
         )
         procs.append(p)

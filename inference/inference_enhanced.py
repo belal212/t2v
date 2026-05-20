@@ -37,7 +37,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from diffusers import AnimateDiffPipeline, MotionAdapter, DDIMScheduler
-from diffusers.utils import export_to_gif
+from diffusers.utils import export_to_gif, export_to_video
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -306,6 +306,7 @@ def generate_enhanced(
         "C2_B_only":    {"interp": False, "blend": blend_beta, "bias": False},
         "C3_A_plus_B":  {"interp": True,  "blend": blend_beta, "bias": False},
         "C4_A_B_C":     {"interp": True,  "blend": blend_beta, "bias": True},
+        "C5_B_plus_C":  {"interp": False, "blend": blend_beta, "bias": True},
     }
     if config not in cfg_map:
         raise ValueError(f"Unknown config: {config}. Choose from {list(cfg_map.keys())}")
@@ -412,19 +413,20 @@ def main():
     parser.add_argument("--motion-module", default="models/motion-module")
     parser.add_argument("--config", default="C4_A_B_C",
                         choices=["C0_baseline", "C1_A_only", "C2_B_only",
-                                 "C3_A_plus_B", "C4_A_B_C"])
+                                 "C3_A_plus_B", "C4_A_B_C", "C5_B_plus_C"])
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--prompt-day", required=True)
     parser.add_argument("--prompt-night", required=True)
     parser.add_argument("--negative-prompt", default="static, flickering, low quality")
     parser.add_argument("--num-frames", type=int, default=16)
-    parser.add_argument("--num-inference-steps", type=int, default=25)
+    parser.add_argument("--num-inference-steps", type=int, default=50)
     parser.add_argument("--guidance-scale", type=float, default=7.5)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--blend-beta", type=float, default=0.3)
     parser.add_argument("--output", required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--cpu-offload", action="store_true")
+    parser.add_argument("--fps", type=int, default=8, help="FPS for MP4 output")
     args = parser.parse_args()
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
@@ -453,7 +455,11 @@ def main():
         blend_beta=args.blend_beta,
         device=args.device,
     )
-    export_to_gif(frames, args.output)
+    ext = Path(args.output).suffix.lower()
+    if ext == ".mp4":
+        export_to_video(frames, args.output, fps=args.fps, quality=9)
+    else:
+        export_to_gif(frames, args.output)
     print(f"\n✓ Saved {len(frames)} frames to: {args.output}")
     print("=" * 60)
 

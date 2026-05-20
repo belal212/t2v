@@ -62,26 +62,29 @@ def evaluate_video(video_path: str, prompt_data: dict, clip_model, clip_processo
     mid_frame = n // 2
     mid_sep = float(night_scores[mid_frame] - day_scores[mid_frame])
 
-    # Flow warping error
+    # Flow warping error — proportions: day=0-33%, dusk=33-60%, night=60-100%
     fwe = compute_flow_warping_error(frames)
     fwe_mean = float(np.mean(fwe))
-    fwe_day = float(np.mean(fwe[0:5])) if len(fwe) > 5 else fwe_mean
-    fwe_dusk = float(np.mean(fwe[5:9])) if len(fwe) > 8 else fwe_mean
-    fwe_night = float(np.mean(fwe[9:15])) if len(fwe) > 14 else fwe_mean
+    T = len(fwe)
+    fwe_day = float(np.mean(fwe[0:int(T*0.33)])) if int(T*0.33) > 0 else fwe_mean
+    fwe_dusk = float(np.mean(fwe[int(T*0.33):int(T*0.60)])) if int(T*0.60) > int(T*0.33) else fwe_mean
+    fwe_night = float(np.mean(fwe[int(T*0.60):])) if T > int(T*0.60) else fwe_mean
 
     # LPIPS
     lpips_scores = compute_lpips_temporal(frames)
     lpips_mean = float(np.mean(lpips_scores)) if len(lpips_scores) else None
-    lpips_day = float(np.mean(lpips_scores[0:5])) if len(lpips_scores) > 5 else lpips_mean
-    lpips_dusk = float(np.mean(lpips_scores[5:9])) if len(lpips_scores) > 8 else lpips_mean
-    lpips_night = float(np.mean(lpips_scores[9:15])) if len(lpips_scores) > 14 else lpips_mean
+    T_lp = len(lpips_scores) if lpips_scores is not None else 0
+    lpips_day = float(np.mean(lpips_scores[0:int(T_lp*0.33)])) if int(T_lp*0.33) > 0 else lpips_mean
+    lpips_dusk = float(np.mean(lpips_scores[int(T_lp*0.33):int(T_lp*0.60)])) if int(T_lp*0.60) > int(T_lp*0.33) else lpips_mean
+    lpips_night = float(np.mean(lpips_scores[int(T_lp*0.60):])) if T_lp > int(T_lp*0.60) else lpips_mean
 
     # SSIM
     ssim_scores = compute_ssim_temporal(frames)
     ssim_mean = float(np.mean(ssim_scores)) if len(ssim_scores) else None
-    ssim_day = float(np.mean(ssim_scores[0:5])) if len(ssim_scores) > 5 else ssim_mean
-    ssim_dusk = float(np.mean(ssim_scores[5:9])) if len(ssim_scores) > 8 else ssim_mean
-    ssim_night = float(np.mean(ssim_scores[9:15])) if len(ssim_scores) > 14 else ssim_mean
+    T_s = len(ssim_scores) if ssim_scores is not None else 0
+    ssim_day = float(np.mean(ssim_scores[0:int(T_s*0.33)])) if int(T_s*0.33) > 0 else ssim_mean
+    ssim_dusk = float(np.mean(ssim_scores[int(T_s*0.33):int(T_s*0.60)])) if int(T_s*0.60) > int(T_s*0.33) else ssim_mean
+    ssim_night = float(np.mean(ssim_scores[int(T_s*0.60):])) if T_s > int(T_s*0.60) else ssim_mean
 
     return {
         "clip_day_slope": day_slope,
@@ -131,7 +134,8 @@ def main():
         config_name = config_dir.name
         print(f"\nEvaluating config: {config_name}")
 
-        for video_path in sorted(config_dir.glob("*.gif")):
+        video_files = [f for f in config_dir.iterdir() if f.suffix in (".mp4", ".gif")]
+        for video_path in sorted(video_files):
             stem = video_path.stem  # prompt_{id}_seed{seed}
             parts = stem.split("_")
             prompt_id = int(parts[1])
